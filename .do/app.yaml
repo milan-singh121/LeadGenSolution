@@ -33,7 +33,6 @@ services:
       - key: REDIS_BROKER_URL
         value: "${redis-broker.INTERNAL_URL}"
         scope: RUN_TIME
-      # All other necessary keys for the UI to function
       - key: SNOV_CLIENT_ID
         value: "${SNOV_CLIENT_ID}"
         type: SECRET
@@ -64,13 +63,13 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    # ✅ FIX: The run command now correctly points to the 'celery_app.py' file
-    # where the Celery app instance is defined.
-    run_command: celery -A celery_app worker --loglevel=info
+
+    run_command: celery -A celery_app worker -P gevent --concurrency=10 --loglevel=info
     instance_count: 1
     instance_size_slug: basic-xs
     # The worker needs all the same secrets and PYTHONPATH
     envs:
+      # This allows Python to find all your modules like 'config', 'clients', etc.
       - key: PYTHONPATH
         value: "/workspace"
         scope: RUN_TIME
@@ -83,9 +82,6 @@ services:
       - key: REDIS_BROKER_URL
         value: "${redis-broker.INTERNAL_URL}"
         scope: RUN_TIME
-      - key: RAPID_API_KEY
-        value: "${RAPID_API_KEY}"
-        type: SECRET
       - key: SNOV_CLIENT_ID
         value: "${SNOV_CLIENT_ID}"
         type: SECRET
@@ -101,6 +97,9 @@ services:
       - key: AWS_REGION
         value: "us-east-1"
         scope: RUN_TIME
+      - key: RAPID_API_KEY
+        value: "${RAPID_API_KEY}"
+        type: SECRET
       - key: OPENAI_API_KEY
         value: "${OPENAI_API_KEY}"
         type: SECRET
