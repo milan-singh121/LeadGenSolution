@@ -57,7 +57,7 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    run_command: celery -A tasks worker --loglevel=info
+    run_command: celery -A celery worker --loglevel=info
     instance_count: 1
     instance_size_slug: basic-xs # A slightly larger instance for processing
     # The worker needs all the same secrets to run the pipeline

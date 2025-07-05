@@ -19,6 +19,8 @@ from clients.rapid_api_client import RapidAPIClient, RapidAPIError
 from clients.snov_client import SnovClient, SnovError
 from clients.llm_clients import ClaudeClient
 from question_prompt import get_question_summarizer_prompts
+from celery import app as celery_app  # Import the central app instance
+
 from config import (
     RAPID_API_KEY,
     MONGO_URI,
@@ -52,7 +54,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Celery App Initialization ---
-celery_app = Celery("tasks", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
+# celery_app = Celery("tasks", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
 celery_app.conf.update(task_track_started=True, broker_connection_retry_on_startup=True)
 
 
