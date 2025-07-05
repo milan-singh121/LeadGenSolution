@@ -55,6 +55,9 @@ services:
       - key: OPENAI_API_KEY
         value: "${OPENAI_API_KEY}"
         type: SECRET
+      - key: REDIS_CA_CERT_B64
+        value: "${REDIS_CA_CERT_B64}"
+        type: SECRET
 
   - name: leadgen-worker
     # This is your Celery worker
@@ -100,6 +103,9 @@ services:
         scope: RUN_TIME
       - key: OPENAI_API_KEY
         value: "${OPENAI_API_KEY}"
+        type: SECRET
+      - key: REDIS_CA_CERT_B64
+        value: "${REDIS_CA_CERT_B64}"
         type: SECRET
 
 # It links your app to the managed database you created.

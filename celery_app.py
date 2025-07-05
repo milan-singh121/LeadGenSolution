@@ -7,6 +7,8 @@ import os
 from celery import Celery
 import logging
 import ssl
+import base64
+import tempfile
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -14,30 +16,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # --- Configuration ---
-# It's crucial that this is read from the environment variable provided by the App Platform.
 REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL")
+REDIS_CA_CERT_B64 = os.environ.get("REDIS_CA_CERT_B64")
 
 if not REDIS_BROKER_URL:
-    # This will cause a clear failure if the environment variable is not set.
     raise ValueError("FATAL: REDIS_BROKER_URL environment variable not set.")
+
+if not REDIS_CA_CERT_B64:
+    raise ValueError("FATAL: REDIS_CA_CERT_B64 environment variable not set.")
 
 logging.info(f"Using Redis Broker URL: {REDIS_BROKER_URL}")
 
+# Decode the base64 CA cert and write to temp file
+with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".pem") as cert_file:
+    cert_file.write(base64.b64decode(REDIS_CA_CERT_B64))
+    ca_cert_path = cert_file.name
+
+logger.info(f"CA certificate written to temporary path: {ca_cert_path}")
+
 # --- Celery App Initialization ---
-# The application name 'LeadGen_Solution' should match your root project folder name.
-# This helps Celery with auto-discovery.
-# celery_app = Celery("workspace", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
 celery_app = Celery(
     "workspace",
     broker=REDIS_BROKER_URL,
     backend=REDIS_BROKER_URL,
-    broker_use_ssl={
-        "ssl_cert_reqs": ssl.CERT_NONE  # OR use CERT_REQUIRED if you have certs
-    },
-    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
 )
+
+# --- Secure SSL Config ---
+celery_app.conf.broker_use_ssl = {
+    "ssl_cert_reqs": ssl.CERT_REQUIRED,
+    "ssl_ca_certs": ca_cert_path,
+}
+celery_app.conf.redis_backend_use_ssl = {
+    "ssl_cert_reqs": ssl.CERT_REQUIRED,
+    "ssl_ca_certs": ca_cert_path,
+}
 
 # --- Optional Configuration ---
 celery_app.conf.update(
@@ -45,8 +58,7 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-# ✅ FIX: This line tells Celery to automatically find any 'tasks.py' files
-# within the project structure. This is the standard way to avoid circular imports.
+# Automatically discover tasks
 celery_app.autodiscover_tasks()
 
 if __name__ == "__main__":
