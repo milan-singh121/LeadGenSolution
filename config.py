@@ -20,7 +20,7 @@ load_dotenv()
 
 RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
-REDIS_BROKER_URL = os.getenv("REDIS_BROKER_URL", "redis://localhost:6379/0")
+REDIS_BROKER_URL = os.getenv("REDIS_BROKER_URL")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "LeadGenDB")
 
 # Snov.io API Credentials
