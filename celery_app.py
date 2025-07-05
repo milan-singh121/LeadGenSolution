@@ -16,12 +16,8 @@ if not REDIS_BROKER_URL:
 
 # --- Celery App Initialization ---
 # The application name 'LeadGen_Solution' should match your root project folder name.
-# ✅ FIX: The `include` argument is removed. We will use autodiscover_tasks instead.
-celery_app = Celery(
-    "workspace",
-    broker=REDIS_BROKER_URL,
-    backend=REDIS_BROKER_URL,
-)
+# This helps Celery with auto-discovery.
+celery_app = Celery("workspace", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
 
 # --- Optional Configuration ---
 celery_app.conf.update(
@@ -32,7 +28,6 @@ celery_app.conf.update(
 # ✅ FIX: This line tells Celery to automatically find any 'tasks.py' files
 # within the project structure. This is the standard way to avoid circular imports.
 celery_app.autodiscover_tasks()
-
 
 if __name__ == "__main__":
     celery_app.start()

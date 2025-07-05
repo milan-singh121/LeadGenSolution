@@ -20,6 +20,7 @@ services:
         value: "8080"
         scope: RUN_TIME
       # ✅ FIX: Explicitly set the PYTHONPATH to the root of the workspace.
+      # This allows Python to find all your modules like 'config', 'clients', etc.
       - key: PYTHONPATH
         value: "/workspace"
         scope: RUN_TIME
@@ -60,12 +61,13 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    run_command: celery -A tasks worker --loglevel=info
+    # ✅ FIX: The run command now correctly points to the 'celery_app.py' file
+    # where the Celery app instance is defined.
+    run_command: celery -A celery_app worker --loglevel=info
     instance_count: 1
     instance_size_slug: basic-xs
     # The worker needs all the same secrets and PYTHONPATH
     envs:
-      # ✅ FIX: Explicitly set the PYTHONPATH for the worker as well.
       - key: PYTHONPATH
         value: "/workspace"
         scope: RUN_TIME
@@ -105,6 +107,7 @@ databases:
   - name: redis-broker
     engine: VALKEY
     production: true
+    # Ensure this name EXACTLY matches the name of your Valkey cluster in the DO dashboard
     cluster_name: "leadgen-broker"
 
 # It defines placeholders for your secrets, which you will fill in the UI.
