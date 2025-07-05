@@ -10,7 +10,7 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    run_command: streamlit run streamlit_app.py
+    run_command: streamlit run streamlit_app.py --server.port ${PORT}
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
