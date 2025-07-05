@@ -7,7 +7,7 @@ import os
 from celery import Celery
 
 # --- Configuration ---
-REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL", "redis://localhost:6379/0")
+REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL")  # "redis://localhost:6379/0"
 
 # --- Celery App Initialization ---
 celery_app = Celery(
