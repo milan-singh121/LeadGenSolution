@@ -10,7 +10,7 @@ from celery import Celery
 REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL", "redis://localhost:6379/0")
 
 # --- Celery App Initialization ---
-app = Celery(
+celery_app = Celery(
     "lead_gen_tasks",
     broker=REDIS_BROKER_URL,
     backend=REDIS_BROKER_URL,
@@ -18,7 +18,7 @@ app = Celery(
 )
 
 # --- Optional Configuration ---
-app.conf.update(
+celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
@@ -26,4 +26,4 @@ app.conf.update(
 # app.autodiscover_tasks()
 
 if __name__ == "__main__":
-    app.start()
+    celery_app.start()

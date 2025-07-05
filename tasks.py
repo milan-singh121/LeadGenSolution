@@ -19,7 +19,7 @@ from clients.rapid_api_client import RapidAPIClient, RapidAPIError
 from clients.snov_client import SnovClient, SnovError
 from clients.llm_clients import ClaudeClient
 from question_prompt import get_question_summarizer_prompts
-from celery import app as celery_app  # Import the central app instance
+from celery import celery_app
 
 from config import (
     RAPID_API_KEY,
