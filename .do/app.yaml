@@ -10,15 +10,14 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
+    # This command correctly uses the PORT variable automatically provided by DigitalOcean
     run_command: streamlit run streamlit_app.py --server.port ${PORT}
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
     # Define environment variables for the UI service
     envs:
-      - key: STREAMLIT_SERVER_PORT
-        value: "8080"
-        scope: RUN_TIME
+      # The STREAMLIT_SERVER_PORT key has been removed as it's redundant.
       - key: MONGO_URI
         value: "${mongo.MONGO_URI}" # Securely references the app-level variable
         scope: RUN_TIME
@@ -52,14 +51,13 @@ services:
         type: SECRET
 
   - name: leadgen-worker
-    # ✅ THIS IS THE MISSING WORKER COMPONENT
-    # This runs your tasks.py file in the background
+    # This is your Celery worker
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    run_command: celery -A celery worker --loglevel=info
+    run_command: celery -A tasks worker --loglevel=info
     instance_count: 1
-    instance_size_slug: basic-xs # A slightly larger instance for processing
+    instance_size_slug: basic-xs
     # The worker needs all the same secrets to run the pipeline
     envs:
       - key: MONGO_URI
@@ -93,7 +91,6 @@ services:
         value: "${OPENAI_API_KEY}"
         type: SECRET
 
-# ✅ THIS SECTION WAS MISSING
 # It links your app to the managed database you created.
 databases:
   - name: redis-broker
@@ -102,7 +99,6 @@ databases:
     # Ensure this name EXACTLY matches the name of your Valkey cluster in the DO dashboard
     cluster_name: "leadgen-broker"
 
-# ✅ THIS SECTION WAS MISSING
 # It defines placeholders for your secrets, which you will fill in the UI.
 vars:
   - key: mongo.MONGO_URI
