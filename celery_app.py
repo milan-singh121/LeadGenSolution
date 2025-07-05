@@ -40,6 +40,7 @@ celery_app = Celery(
     "workspace",
     broker=REDIS_BROKER_URL,
     backend=REDIS_BROKER_URL,
+    include=["tasks"],
 )
 
 # --- Secure SSL Config ---
