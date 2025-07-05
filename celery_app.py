@@ -7,14 +7,20 @@ import os
 from celery import Celery
 
 # --- Configuration ---
-REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL")  # "redis://localhost:6379/0"
+# It's crucial that this is read from the environment variable provided by the App Platform.
+REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL")
+
+if not REDIS_BROKER_URL:
+    # This will cause a clear failure if the environment variable is not set.
+    raise ValueError("FATAL: REDIS_BROKER_URL environment variable not set.")
 
 # --- Celery App Initialization ---
+# The application name 'LeadGen_Solution' should match your root project folder name.
+# ✅ FIX: The `include` argument is removed. We will use autodiscover_tasks instead.
 celery_app = Celery(
-    "lead_gen_tasks",
+    "workspace",
     broker=REDIS_BROKER_URL,
     backend=REDIS_BROKER_URL,
-    include=["tasks"],  # Explicitly tell Celery where to find the task definitions.
 )
 
 # --- Optional Configuration ---
@@ -23,7 +29,10 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-# app.autodiscover_tasks()
+# ✅ FIX: This line tells Celery to automatically find any 'tasks.py' files
+# within the project structure. This is the standard way to avoid circular imports.
+celery_app.autodiscover_tasks()
+
 
 if __name__ == "__main__":
     celery_app.start()
