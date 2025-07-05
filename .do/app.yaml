@@ -10,7 +10,7 @@ services:
       repo: milan-singh121/LeadGenSolution
       branch: main # Or your deployment branch
     run_command: streamlit run streamlit_app.py
-    http_port: 8501
+    http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs # Smallest instance is fine for the UI
     # Define environment variables for the UI service
