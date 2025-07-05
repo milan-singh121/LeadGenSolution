@@ -10,23 +10,27 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    # ✅ FIX: Using the most explicit run command to force the correct port and address.
-    # This tells Streamlit to listen on port 8080 on all available network interfaces.
-    run_command: streamlit run streamlit_app.py --server.port 8080 --server.address 0.0.0.0
+    run_command: streamlit run streamlit_app.py
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
     # Define environment variables for the UI service
     envs:
-      # The STREAMLIT_SERVER_PORT key is removed as the run_command is more explicit.
+      - key: STREAMLIT_SERVER_PORT
+        value: "8080"
+        scope: RUN_TIME
+      # ✅ FIX: Explicitly set the PYTHONPATH to the root of the workspace.
+      - key: PYTHONPATH
+        value: "/workspace"
+        scope: RUN_TIME
       - key: MONGO_URI
-        value: "${mongo.MONGO_URI}" # Securely references the app-level variable
+        value: "${mongo.MONGO_URI}"
         scope: RUN_TIME
       - key: MONGO_DB_NAME
         value: "LeadGen_Test"
         scope: RUN_TIME
       - key: REDIS_BROKER_URL
-        value: "${redis-broker.INTERNAL_URL}" # Securely connects to the managed Valkey
+        value: "${redis-broker.INTERNAL_URL}"
         scope: RUN_TIME
       # All other necessary keys for the UI to function
       - key: SNOV_CLIENT_ID
@@ -59,8 +63,12 @@ services:
     run_command: celery -A tasks worker --loglevel=info
     instance_count: 1
     instance_size_slug: basic-xs
-    # The worker needs all the same secrets to run the pipeline
+    # The worker needs all the same secrets and PYTHONPATH
     envs:
+      # ✅ FIX: Explicitly set the PYTHONPATH for the worker as well.
+      - key: PYTHONPATH
+        value: "/workspace"
+        scope: RUN_TIME
       - key: MONGO_URI
         value: "${mongo.MONGO_URI}"
         scope: RUN_TIME
@@ -97,7 +105,6 @@ databases:
   - name: redis-broker
     engine: VALKEY
     production: true
-    # Ensure this name EXACTLY matches the name of your Valkey cluster in the DO dashboard
     cluster_name: "leadgen-broker"
 
 # It defines placeholders for your secrets, which you will fill in the UI.
