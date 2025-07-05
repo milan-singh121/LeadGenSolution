@@ -1,0 +1,95 @@
+name: leadgen-pipeline-app
+region: nyc1 # Or your preferred region, e.g., fra1, blr1
+
+# Define the services (components) of your application
+services:
+  - name: leadgen-ui
+    # This is your Streamlit web service
+    git:
+      # FIX: The repo should be in 'username/repository' format
+      repo: milan-singh121/LeadGenSolution
+      branch: main # Or your deployment branch
+    run_command: streamlit run streamlit_app.py
+    http_port: 8501
+    instance_count: 1
+    instance_size_slug: basic-xxs # Smallest instance is fine for the UI
+    # Define environment variables for the UI service
+    envs:
+      - key: MONGO_URI
+        # FIX: Use the binding variable to securely connect to the database defined below.
+        # The actual connection string will be set in the App's settings UI.
+        value: "${mongo.MONGO_URI}"
+        scope: RUN_TIME
+      - key: MONGO_DB_NAME
+        value: "LeadGen_Test" # Or your DB name
+        scope: RUN_TIME
+      - key: REDIS_BROKER_URL
+        # FIX: Use the binding variable to securely connect to the managed Redis/Valkey.
+        value: "${redis-broker.INTERNAL_URL}"
+        scope: RUN_TIME
+      - key: SNOV_CLIENT_ID
+        # FIX: Use a binding variable for the secret. The value will be set in the UI.
+        value: "${SNOV_CLIENT_ID}"
+        type: SECRET
+      - key: SNOV_CLIENT_SECRET
+        value: "${SNOV_CLIENT_SECRET}"
+        type: SECRET
+
+  - name: leadgen-worker
+    # This is your Celery worker
+    git:
+      repo: milan-singh121/LeadGenSolution
+      branch: main # Or your deployment branch
+    run_command: celery -A tasks worker --loglevel=info
+    instance_count: 1
+    instance_size_slug: basic-xs # A slightly larger instance for processing
+    # Define environment variables for the worker service
+    envs:
+      - key: MONGO_URI
+        value: "${mongo.MONGO_URI}"
+        scope: RUN_TIME
+      - key: MONGO_DB_NAME
+        value: "LeadGen_Test"
+        scope: RUN_TIME
+      - key: REDIS_BROKER_URL
+        value: "${redis-broker.INTERNAL_URL}"
+        scope: RUN_TIME
+      - key: RAPID_API_KEY
+        value: "${RAPID_API_KEY}"
+        type: SECRET
+      - key: SNOV_CLIENT_ID
+        value: "${SNOV_CLIENT_ID}"
+        type: SECRET
+      - key: SNOV_CLIENT_SECRET
+        value: "${SNOV_CLIENT_SECRET}"
+        type: SECRET
+      - key: AWS_ACCESS_KEY
+        value: "${AWS_ACCESS_KEY}"
+        type: SECRET
+      - key: AWS_SECRET_KEY
+        value: "${AWS_SECRET_KEY}"
+        type: SECRET
+      - key: AWS_REGION
+        value: "us-east-1"
+        scope: RUN_TIME
+      - key: OPENAI_API_KEY
+        value: "${OPENAI_API_KEY}"
+        type: SECRET
+
+# Define the managed databases your app needs
+databases:
+  - name: redis-broker
+    # This is the Managed Database we created in Step 1
+    engine: VALKEY
+    production: true
+    # The cluster_name must EXACTLY match the name you gave it in the UI
+    cluster_name: "leadgen-broker"
+
+# This section defines App-Level Environment Variables that can be referenced
+# by services. This is the correct place to define placeholders for external services.
+vars:
+  - key: mongo.MONGO_URI
+    # This is a placeholder. You will paste your actual MongoDB connection string
+    # in the DigitalOcean App Settings UI after the app is created.
+    value: "mongodb+srv://..."
+    type: SECRET
