@@ -11,7 +11,7 @@ import logging
 import pandas as pd
 import asyncio
 from datetime import datetime, timedelta
-from celery import Celery, chain
+from celery import chain
 from pymongo import MongoClient, UpdateOne
 from typing import Dict, Any, Optional, List, Set
 
@@ -25,7 +25,6 @@ from config import (
     RAPID_API_KEY,
     MONGO_URI,
     MONGO_DB_NAME,
-    REDIS_BROKER_URL,
     SNOV_CLIENT_ID,
     SNOV_CLIENT_SECRET,
     BLOCKED_INDUSTRIES,
