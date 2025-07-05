@@ -10,14 +10,17 @@ services:
     git:
       repo: milan-singh121/LeadGenSolution
       branch: main
-    # This command correctly uses the PORT variable automatically provided by DigitalOcean
-    run_command: streamlit run streamlit_app.py --server.port ${PORT}
+    # FIX: The run command is simplified. The port is now set via a standard environment variable.
+    run_command: streamlit run streamlit_app.py
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
     # Define environment variables for the UI service
     envs:
-      # The STREAMLIT_SERVER_PORT key has been removed as it's redundant.
+      # ✅ ADDED: This is the standard way to tell Streamlit which port to use.
+      - key: STREAMLIT_SERVER_PORT
+        value: "8080"
+        scope: RUN_TIME
       - key: MONGO_URI
         value: "${mongo.MONGO_URI}" # Securely references the app-level variable
         scope: RUN_TIME
