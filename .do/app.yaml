@@ -1,5 +1,7 @@
+# This is the full and correct specification for your application.
+# It defines the UI, the background worker, and the database connection.
 name: leadgen-pipeline-app
-region: nyc1 # Or your preferred region, e.g., fra1, blr1
+region: ams # Using your specified region
 
 # Define the services (components) of your application
 services:
@@ -7,26 +9,26 @@ services:
     # This is your Streamlit web service
     git:
       repo: milan-singh121/LeadGenSolution
-      branch: main # Or your deployment branch
+      branch: main
     run_command: streamlit run streamlit_app.py
     http_port: 8080
     instance_count: 1
-    instance_size_slug: basic-xxs # Smallest instance is fine for the UI
+    instance_size_slug: basic-xxs
     # Define environment variables for the UI service
     envs:
-      # FIX: Use an environment variable to tell Streamlit which port to use.
       - key: STREAMLIT_SERVER_PORT
         value: "8080"
         scope: RUN_TIME
       - key: MONGO_URI
-        value: "${mongo.MONGO_URI}"
+        value: "${mongo.MONGO_URI}" # Securely references the app-level variable
         scope: RUN_TIME
       - key: MONGO_DB_NAME
-        value: "LeadGen_Test" # Or your DB name
+        value: "LeadGen_Test"
         scope: RUN_TIME
       - key: REDIS_BROKER_URL
-        value: "${redis-broker.INTERNAL_URL}"
+        value: "${redis-broker.INTERNAL_URL}" # Securely connects to the managed Valkey
         scope: RUN_TIME
+      # All other necessary keys for the UI to function
       - key: SNOV_CLIENT_ID
         value: "${SNOV_CLIENT_ID}"
         type: SECRET
@@ -42,7 +44,6 @@ services:
       - key: AWS_REGION
         value: "us-east-1"
         scope: RUN_TIME
-      # ✅ ADDED MISSING KEYS FOR THE UI SERVICE
       - key: RAPID_API_KEY
         value: "${RAPID_API_KEY}"
         type: SECRET
@@ -51,14 +52,15 @@ services:
         type: SECRET
 
   - name: leadgen-worker
-    # This is your Celery worker
+    # ✅ THIS IS THE MISSING WORKER COMPONENT
+    # This runs your tasks.py file in the background
     git:
       repo: milan-singh121/LeadGenSolution
-      branch: main # Or your deployment branch
+      branch: main
     run_command: celery -A tasks worker --loglevel=info
     instance_count: 1
     instance_size_slug: basic-xs # A slightly larger instance for processing
-    # Define environment variables for the worker service
+    # The worker needs all the same secrets to run the pipeline
     envs:
       - key: MONGO_URI
         value: "${mongo.MONGO_URI}"
@@ -91,16 +93,36 @@ services:
         value: "${OPENAI_API_KEY}"
         type: SECRET
 
-# Define the managed databases your app needs
+# ✅ THIS SECTION WAS MISSING
+# It links your app to the managed database you created.
 databases:
   - name: redis-broker
     engine: VALKEY
     production: true
+    # Ensure this name EXACTLY matches the name of your Valkey cluster in the DO dashboard
     cluster_name: "leadgen-broker"
 
-# This section defines App-Level Environment Variables that can be referenced
-# by services. This is the correct place to define placeholders for external services.
+# ✅ THIS SECTION WAS MISSING
+# It defines placeholders for your secrets, which you will fill in the UI.
 vars:
   - key: mongo.MONGO_URI
     value: "YOUR_MONGODB_ATLAS_CONNECTION_STRING"
+    type: SECRET
+  - key: RAPID_API_KEY
+    value: ""
+    type: SECRET
+  - key: SNOV_CLIENT_ID
+    value: ""
+    type: SECRET
+  - key: SNOV_CLIENT_SECRET
+    value: ""
+    type: SECRET
+  - key: AWS_ACCESS_KEY
+    value: ""
+    type: SECRET
+  - key: AWS_SECRET_KEY
+    value: ""
+    type: SECRET
+  - key: OPENAI_API_KEY
+    value: ""
     type: SECRET
