@@ -53,10 +53,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Celery App Initialization ---
-# celery_app = Celery("tasks", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
-celery_app.conf.update(task_track_started=True, broker_connection_retry_on_startup=True)
-
 
 # --- Helper function to update pipeline status ---
 def update_status(run_id: str, message: str):
