@@ -15,7 +15,7 @@ from datetime import datetime
 
 # --- Project Path Setup ---
 # This ensures that the app can import other project modules
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # --- Local Imports ---
 from config import MONGO_URI, MONGO_DB_NAME, SNOV_CLIENT_ID, SNOV_CLIENT_SECRET
