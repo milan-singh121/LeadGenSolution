@@ -6,6 +6,7 @@ Workers will import this `app` object to connect to the Celery network.
 import os
 from celery import Celery
 import logging
+import ssl
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -27,7 +28,16 @@ logging.info(f"Using Redis Broker URL: {REDIS_BROKER_URL}")
 # --- Celery App Initialization ---
 # The application name 'LeadGen_Solution' should match your root project folder name.
 # This helps Celery with auto-discovery.
-celery_app = Celery("workspace", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
+# celery_app = Celery("workspace", broker=REDIS_BROKER_URL, backend=REDIS_BROKER_URL)
+celery_app = Celery(
+    "workspace",
+    broker=REDIS_BROKER_URL,
+    backend=REDIS_BROKER_URL,
+    broker_use_ssl={
+        "ssl_cert_reqs": ssl.CERT_NONE  # OR use CERT_REQUIRED if you have certs
+    },
+    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+)
 
 # --- Optional Configuration ---
 celery_app.conf.update(
