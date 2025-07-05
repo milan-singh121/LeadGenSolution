@@ -11,7 +11,6 @@ import uuid
 import pandas as pd
 import streamlit as st
 from pymongo import MongoClient, DESCENDING
-from celery.result import AsyncResult
 from datetime import datetime
 
 # --- Project Path Setup ---
@@ -20,7 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # --- Local Imports ---
 from config import MONGO_URI, MONGO_DB_NAME, SNOV_CLIENT_ID, SNOV_CLIENT_SECRET
-from tasks import start_lead_generation_pipeline, celery_app
+from tasks import start_lead_generation_pipeline
 from clients.snov_client import SnovClient, SnovError
 
 # --- Logging Setup ---
@@ -51,8 +50,21 @@ def get_mongo_client():
         return None
 
 
+@st.cache_resource
+def get_snov_client():
+    """Cached function to get a Snov.io client."""
+    if not SNOV_CLIENT_ID or not SNOV_CLIENT_SECRET:
+        st.error("Snov.io API credentials are not configured.")
+        return None
+    try:
+        return SnovClient(client_id=SNOV_CLIENT_ID, client_secret=SNOV_CLIENT_SECRET)
+    except Exception as e:
+        st.error(f"Failed to initialize Snov.io client: {e}")
+        return None
+
+
 client = get_mongo_client()
-client_snov = SnovClient(client_id=SNOV_CLIENT_ID, client_secret=SNOV_CLIENT_SECRET)
+snov_client = get_snov_client()
 
 
 @st.cache_data(ttl=600)
@@ -71,14 +83,26 @@ def get_dropdown_data(_client, collection_name):
         return ["-- Error --"], {}
 
 
+@st.cache_data(ttl=300)
+def get_snov_lists(_snov_client):
+    """Cached function to fetch Snov.io lists."""
+    if not _snov_client:
+        return {}
+    try:
+        existing_lists = _snov_client.get_user_lists()
+        return {item["name"]: item["id"] for item in existing_lists}
+    except SnovError as e:
+        st.warning(f"Could not fetch Snov.io lists: {e}")
+        return {}
+
+
 # --- UI Layout and Input Fields ---
 
 # Fetch data for dropdowns
 industry_options, industry_map = get_dropdown_data(client, "IndustryCodesV2")
 function_options, function_map = get_dropdown_data(client, "JobFunctionID")
 location_options, location_map = get_dropdown_data(client, "LocationID")
-existing_lists = client_snov.get_user_lists()
-list_name_to_id = {item["name"]: item["id"] for item in existing_lists}
+list_name_to_id = get_snov_lists(snov_client)
 
 st.markdown("### 1. Define Job Search Criteria")
 col1, col2, col3 = st.columns(3)
@@ -98,32 +122,32 @@ with col2:
     )
 
 with col3:
-    # Snov.io List Selection
     st.markdown("📄 Snov.io Prospect List")
     dropdown_options = sorted(list(list_name_to_id.keys())) + ["➕ Create new list"]
     selected_option = st.selectbox(
         "Select or create a list", dropdown_options, label_visibility="collapsed"
     )
 
-    snov_list_id = None
+    snov_list_id = st.session_state.get("snov_list_id")
     if selected_option == "➕ Create new list":
         new_list_name = st.text_input("Enter name for new list")
-        if new_list_name and client_snov:
+        if new_list_name and snov_client:
             if st.button("Create and Use This List"):
                 try:
-                    response = client_snov.create_prospect_list(name=new_list_name)
+                    response = snov_client.create_prospect_list(name=new_list_name)
                     if response.get("success"):
-                        snov_list_id = response.get("id")
+                        st.session_state.snov_list_id = response.get("id")
                         st.success(
-                            f"Created new list: {new_list_name} (ID: {snov_list_id})"
+                            f"Created new list: {new_list_name} (ID: {st.session_state.snov_list_id})"
                         )
-                        st.cache_data.clear()  # Clear cache to refresh list
+                        st.cache_data.clear()
+                        st.rerun()
                     else:
                         st.error("Failed to create new list.")
                 except SnovError as e:
                     st.error(f"Error creating list: {e}")
     else:
-        snov_list_id = list_name_to_id.get(selected_option)
+        st.session_state.snov_list_id = list_name_to_id.get(selected_option)
 
 st.markdown("### 2. Add Granular Filters")
 col4, col5, col6 = st.columns(3)
@@ -136,27 +160,6 @@ with col6:
 
 st.markdown("---")
 
-
-st.markdown(
-    """
-    <style>
-    div.stButton > button:first-child {
-        background-color: #2aa198; /* Soothing teal */
-        color: white;
-        border: 1px solid #268f89;
-        border-radius: 8px;
-        transition: background-color 0.3s ease, border-color 0.3s ease;
-    }
-    div.stButton > button:first-child:hover {
-        background-color: #218b80;
-        border-color: #1e776f;
-        color: white;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 # --- Search Button and Pipeline Trigger ---
 if st.button(
     "🚀 Start Lead Generation Pipeline", use_container_width=True, type="primary"
@@ -165,7 +168,7 @@ if st.button(
 
     if not keywords:
         st.warning("Please enter at least one job title keyword.")
-    elif not snov_list_id:
+    elif not st.session_state.snov_list_id:
         st.warning("Please select or create a Snov.io prospect list.")
     else:
         with st.spinner("Dispatching job to the processing pipeline..."):
@@ -186,19 +189,16 @@ if st.button(
                     else None,
                     "sort": "mostRecent",
                 },
-                "snov_list_id": snov_list_id,
-                "run_id": str(uuid.uuid4()),  # Unique ID for this specific run
+                "snov_list_id": st.session_state.snov_list_id,
+                "run_id": str(uuid.uuid4()),
             }
 
             try:
-                # Send the job to the Celery queue
-                task = start_lead_generation_pipeline.delay(pipeline_params)
+                start_lead_generation_pipeline.delay(pipeline_params)
 
-                # Log the query to MongoDB for monitoring
                 if client:
                     query_log = {
                         "run_id": pipeline_params["run_id"],
-                        "task_id": task.id,
                         "criteria_keywords": pipeline_params["search_criteria"][
                             "keywords"
                         ],
@@ -259,7 +259,7 @@ if client:
                     st.info(f"**Current Step:** {status}")
                     st.text(f"Run ID: {query.get('run_id')}")
                     st.text(
-                        f"Submitted At: {query.get('submitted_at').strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                        f"Last Update: {query.get('last_updated', query.get('submitted_at')).strftime('%Y-%m-%d %H:%M:%S')} UTC"
                     )
 
     except Exception as e:
