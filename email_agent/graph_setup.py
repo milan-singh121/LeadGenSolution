@@ -1,26 +1,24 @@
 """
 This script defines the LangGraph state, nodes, and conditional edges
-for the email generation agent, using Claude on Bedrock and robust XML parsing.
+for the email generation agent, using a Critic -> Reflect -> Refine loop.
 """
 
 import os
 import sys
 import logging
-from typing import TypedDict, List, Optional
 import json
 import asyncio
 import re
+from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 
-
+# Add project root to path
 app_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(app_dir))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-# Import tools, prompts, and the LLM client using relative imports
-from email_agent.tools import (
+from email_check_agents.tools import (
     get_prospect_info,
     get_prospect_posts,
     get_company_info,
@@ -28,19 +26,16 @@ from email_agent.tools import (
     create_text_embedding,
     find_similar_clients,
 )
-from email_agent.prompt import get_email_system_prompt, get_email_user_prompt
-from email_agent.agent_utils import extract_emails_from_llm_response
-from email_agent.db_client import db as async_db  # Import the async db client
-from clients.llm_clients import ClaudeClient
+from email_check_agents.prompt import get_email_system_prompt, get_email_user_prompt
+from email_check_agents.agent_utils import extract_emails_from_llm_response
+from email_check_agents.db_client import db as async_db
+from clients.llm_clients import ClaudeClient  # Assuming you have this client
 
 logger = logging.getLogger(__name__)
 claude_client = ClaudeClient()
 
 
-# --- State Definition ---
 class EmailGenState(TypedDict):
-    """Represents the state of our email generation graph."""
-
     prospect_url: str
     sequence_id: int
     prospect_name: Optional[str]
@@ -52,20 +47,16 @@ class EmailGenState(TypedDict):
     system_prompt: str
     draft_subject: Optional[str]
     draft_email: Optional[str]
-    qa_feedback: Optional[str]
-    rewrite_count: int
+    self_correction_plan: Optional[str]
+    critic_feedback: Optional[str]
+    refine_count: int
     total_cost: float
 
 
-# --- Graph Nodes ---
-
-
 async def research_node(state: EmailGenState) -> dict:
-    """Gathers all necessary data from DB to build the prompts."""
     print(f"\n---NODE: Researching Prospect for Sequence #{state['sequence_id']}---")
     prospect_url = state["prospect_url"]
     sequence_id = state["sequence_id"]
-
     # Fetch all data concurrently using the async client
     prospect_info_task = get_prospect_info.ainvoke({"linkedin_url": prospect_url})
     company_info_task = get_company_info.ainvoke({})
@@ -79,19 +70,15 @@ async def research_node(state: EmailGenState) -> dict:
     )
 
     if prospect_info.get("error") or not system_prompt_doc:
-        logger.error("Research node failed: Prospect or System Prompt not found.")
+        logger.error("Research failed: Prospect or System Prompt not found.")
         return {"prospect_info": prospect_info, "system_prompt": None}
 
     full_name = f"{prospect_info.get('firstName', '')} {prospect_info.get('lastName', '')}".strip()
-
-    # Vector search for similar clients
     similar_clients = []
-    if prospect_industry := prospect_info.get("companyIndustry"):
-        if industry_embedding := create_text_embedding.invoke(
-            {"text": prospect_industry}
-        ):
+    if industry := prospect_info.get("companyIndustry"):
+        if embedding := create_text_embedding.invoke({"text": industry}):
             similar_clients = await find_similar_clients.ainvoke(
-                {"embedding": industry_embedding}
+                {"embedding": embedding}
             )
 
     return {
@@ -107,23 +94,21 @@ async def research_node(state: EmailGenState) -> dict:
         "client_data": similar_clients,
         "system_prompt": system_prompt_doc["prompt_text"],
         "total_cost": 0.0,
-        "rewrite_count": 0,
+        "refine_count": 0,
     }
 
 
 async def draft_email_node(state: EmailGenState) -> dict:
-    """Drafts the initial email using the database-driven prompts and XML parsing."""
-    print("---NODE: Drafting Email---")
+    print("---NODE: Drafting Email (V1)---")
     if not all(state.get(k) for k in ["prospect_name", "blueprint", "system_prompt"]):
-        return {
-            "draft_email": "Error: Missing critical data for drafting.",
-            "draft_subject": "Error",
-        }
+        return {"draft_email": "Error: Missing data", "draft_subject": "Error"}
 
     person = state["prospect_info"]
     company = person.get("company")
     job_data = (
-        await async_db.Jobs.find_one({"company_name": company}) if company else {}
+        await async_db.jobs_collection.find_one({"company_name": company})
+        if company
+        else {}
     )
 
     user_prompt = get_email_user_prompt(
@@ -156,184 +141,237 @@ async def draft_email_node(state: EmailGenState) -> dict:
         return {
             "draft_subject": draft["subject"],
             "draft_email": draft["body"],
-            "rewrite_count": state.get("rewrite_count", 0) + 1,
+            "refine_count": state.get("refine_count", 0) + 1,
             "total_cost": state.get("total_cost", 0) + cost,
         }
+
     logger.error("Failed to parse Claude's draft response into XML.")
     return {"draft_subject": "Error", "draft_email": "Parsing Error"}
 
 
-# async def qa_node(state: EmailGenState) -> dict:
-#     """Performs quality assurance on the drafted email."""
-#     print("---NODE: Quality Assurance---")
-#     logger.info(f"Email :, {state['draft_email']}")
-#     qa_user_prompt = f"""
-#         Please review the following email draft against the provided blueprint.
+async def self_correction_node(state: EmailGenState) -> dict:
+    """Proactively reviews its own draft to create an improvement plan."""
+    print("---NODE: Self-Correction Review---")
+    self_correction_prompt = f"""
+        You are a senior copy editor. You have just written the following draft.
+        Review your own work critically against the provided blueprint and all source data.
+        Your goal is to identify areas for improvement before it goes to a final check.
 
-#         **Blueprint:**
-#         {json.dumps(state["blueprint"], indent=2)}
+        **Non-Negotiable Rules:**
+            1.  The email must NOT contain any placeholders like [Company Name], [First Name], etc.
+            2.  The email must NOT contain any data (names, statistics, facts) that cannot be verified from the 'Source Data' below.
+            3.  The email must NOT mention client names or industry that are not present in the 'Client Data' section of the source data.
+            4.  The email must NOT include a signature or sign-off like "Best," "Regards," or "P.S.".
+            5.  The email must NOT make assumptions. All personalization must be tied directly to the provided source data.
+            6.  The prospect's first name, "{state["prospect_name"]}", must be used correctly. It is acceptable to use the name more than once if it enhances personalization.
+            7.  Word count is flexible; do not fail the email based on its length as long as it is coherent and professional.
+            8.  The Email must NOT mention "AI-powered solutions" as the content of the email, it should be more personlized for the prospects need.
+            9.	The email must not mention “AI-powered solutions” or imply that we have developed any tools. We are a staffing company that provides qualified candidates, not a tech provider or product company.
 
-#         **Draft Subject:** {state["draft_subject"]}
-#         **Draft Body:**
-#         {state["draft_email"]}
-
-
-#         - If the email meets all the criteria, respond only with the word “APPROVED”. Otherwise, provide a numbered list of specific changes needed.
-#         - When referencing the prospect’s personal or company details (such as name, job title, company name, or industry), always ensure they are accurate and match the provided prospect data exactly. Double-check for correct spelling, formatting, and context relevance to maintain a personalized and professional tone throughout the email.
-#     """
-#     feedback, cost = claude_client.get_structured_response(
-#         state["system_prompt"], qa_user_prompt
-#     )
-#     print(f"---QA Feedback: {feedback}---")
-#     return {"qa_feedback": feedback, "total_cost": state.get("total_cost", 0) + cost}
-
-
-async def qa_node(state: EmailGenState) -> dict:
-    """Performs quality assurance on the drafted email with updated prompt."""
-    print("---NODE: Quality Assurance---")
-    logger.info(f"QA review for email: {state['draft_email']}")
-    qa_user_prompt = f"""
-        Please review the following email draft against the provided blueprint.
+        **Source Data:**
+            - Prospect Info: {json.dumps(state["prospect_info"], indent=2)}
+            - Prospect's LinkedIn Posts: {json.dumps(state["prospect_posts"], indent=2)}
+            - Client Data: {json.dumps(state["client_data"], indent=2)}
+            - Blueprint: {json.dumps(state["blueprint"], indent=2)}
+            - About Inhousen: {json.dumps(state["company_info"], indent=2)}
+            - System Prompt: {json.dumps(state["system_prompt"], indent=2)}
+        --- END SOURCE DATA ---
         
-        **Blueprint:**
-        {json.dumps(state["blueprint"], indent=2)}
-        
-        **Draft Subject:** {state["draft_subject"]}
-        **Draft Body:**
-        {state["draft_email"]}
+        **Your Draft to Review:**
+            Subject: {state["draft_subject"]}
+            Body: {state["draft_email"]}
 
-        **Instructions:**
-        1. First, provide a numbered list of specific, actionable changes needed to improve the email.
-        2. After the list, provide a final summary sentence that MUST start with "Overall, the email meets XX% of the criteria." where XX is your estimated percentage of how well the draft adheres to the blueprint.
-        3. If and only if the email is 100% perfect and needs no changes, respond ONLY with the word "APPROVED".
-        4. When referencing the prospect’s personal or company details (such as name, job title, company name, or industry), always ensure they are accurate and match the provided prospect data exactly. Double-check for correct spelling, formatting, and context relevance to maintain a personalized and professional tone throughout the email.
+        Create a concise, bulleted list of actionable instructions for a junior copywriter to refine this draft into a final, high-quality version.
+        This plan should address any rule violations and also suggest improvements to tone, flow, and persuasiveness.
+        If the draft is already perfect, simply respond with "No changes needed."
     """
-    feedback, cost = claude_client.get_structured_response(
-        state["system_prompt"], qa_user_prompt
+    plan, cost = claude_client.get_structured_response(
+        state["system_prompt"], self_correction_prompt
     )
-    print(f"---QA Feedback: {feedback}---")
-    return {"qa_feedback": feedback, "total_cost": state.get("total_cost", 0) + cost}
+    print(f"---Self-Correction Plan:\n{plan}---")
+    return {
+        "self_correction_plan": plan,
+        "total_cost": state.get("total_cost", 0) + cost,
+    }
 
 
-async def rewrite_node(state: EmailGenState) -> dict:
-    """Rewrites the email based on QA feedback."""
-    print("---NODE: Rewriting Email---")
-    rewrite_user_prompt = f"""
-        Please rewrite the following email based on the QA feedback.
-        
-        **QA Feedback:**
-        {state["qa_feedback"]}
+async def refine_node(state: EmailGenState) -> dict:
+    """Refines the email based on the self-correction plan."""
+    print("---NODE: Refining Email (V2)---")
+    refine_user_prompt = f"""
+        Please rewrite the following email. You must strictly follow the 'Self-Correction Plan' to create a superior version.
+
+        **Self-Correction Plan (Your guide):**
+        {state["self_correction_plan"]}
         
         **Original Draft Subject:** {state["draft_subject"]}
         **Original Draft Body:**
         {state["draft_email"]}
 
-        **Original Blueprint:**
+        **Original Blueprint (for reference):**
         {json.dumps(state["blueprint"], indent=2)}
         
         Provide only the rewritten email in the required XML format, inside <emails> and <email> tags.
     """
     response_text, cost = claude_client.get_structured_response(
-        state["system_prompt"], rewrite_user_prompt
+        state["system_prompt"], refine_user_prompt
     )
     emails = extract_emails_from_llm_response(response_text)
-
     if emails:
         draft = emails[0]
         return {
             "draft_subject": draft["subject"],
             "draft_email": draft["body"],
-            "rewrite_count": state["rewrite_count"] + 1,
+            "refine_count": state["refine_count"] + 1,
             "total_cost": state.get("total_cost", 0) + cost,
         }
-    logger.error("Failed to parse Claude's rewrite response into XML.")
-    return {"draft_subject": "Error", "draft_email": "Rewrite Parsing Error"}
+    logger.error("Failed to parse Claude's refine response into XML.")
+    return {"draft_subject": "Error", "draft_email": "Refine Parsing Error"}
 
 
-# --- Conditional Edges & Graph Definition ---
-def prospect_found(state: EmailGenState) -> str:
-    if "error" in state.get("prospect_info", {}) or not state.get("system_prompt"):
-        return "end"
-    return "continue"
-
-
-# def should_rewrite(state: EmailGenState) -> str:
-#     if "APPROVED" in state["qa_feedback"] or state["rewrite_count"] >= 3:
-#         return "end"
-#     return "rewrite"
-
-
-# def should_rewrite(state: EmailGenState) -> str:
-#     """
-#     Decision node to determine the next step after QA based on a percentage score.
-#     """
-#     print("---NODE: Making Decision on Rewrite---")
-#     feedback = state["qa_feedback"]
-#     rewrite_count = state["rewrite_count"]
-
-#     # Condition 1: Explicit approval (100% perfect)
-#     if "APPROVED" in feedback:
-#         print("---DECISION: Email explicitly APPROVED! Finishing flow.---")
-#         return "end"
-
-#     # Condition 2: Check for percentage score
-#     match = re.search(r"meets (\d+)% of the criteria", feedback, re.IGNORECASE)
-#     if match:
-#         score = int(match.group(1))
-#         print(f"---DECISION: QA Agent scored the email at {score}%.---")
-#         if score >= 75:
-#             print("---DECISION: Score is >= 85%. Finishing flow.---")
-#             return "end"
-
-#         # # Condition 3: Max rewrites reached
-#         # if rewrite_count >= 4:
-#         #     print(
-#         #         f"---DECISION: Max rewrites ({rewrite_count}) reached. Finishing flow.---"
-#         #     )
-#         # return "end"
-
-#     # Otherwise, continue rewriting
-#     print("---DECISION: Revisions needed. Rerouting to rewrite.---")
-#     return "rewrite"
-
-
-def should_rewrite(state: EmailGenState) -> str:
+async def correction_review_node(state: EmailGenState) -> dict:
     """
-    Decision node to determine the next step after QA based on a percentage score.
-    The loop ends only if the score is >= 80%.
+    NEW NODE: Checks if the refined email successfully implemented the self-correction plan.
     """
-    print("---NODE: Making Decision on Rewrite---")
-    feedback = state["qa_feedback"]
+    print("---NODE: Correction Review---")
+    review_prompt = f"""
+        You are a meticulous reviewer. Your only job is to check if the 'Refined Email' has successfully implemented all the instructions from the 'Self-Correction Plan'.
 
-    # Primary Condition: Check for percentage score
-    match = re.search(r"meets (\d+)% of the criteria", feedback, re.IGNORECASE)
-    if match:
-        score = int(match.group(1))
-        print(f"---DECISION: QA Agent scored the email at {score}%.---")
-        if score >= 80:
-            print("---DECISION: Score is >= 80%. Finishing flow.---")
-            return "end"
+        **Self-Correction Plan (The instructions that MUST be followed):**
+        {state["self_correction_plan"]}
 
-    # If score is < 80 or no score was found, continue rewriting indefinitely.
-    print(
-        "---DECISION: Score is < 80% or no score found. Revisions needed. Rerouting to rewrite.---"
+        **Refined Email to Review:**
+        Subject: {state["draft_subject"]}
+        Body: {state["draft_email"]}
+
+        Compare the refined email to the plan. If all points in the plan have been addressed, respond ONLY with the word "PASS".
+        If any instruction from the plan was not followed, respond with "FAIL" and a one-sentence explanation of which instruction was missed.
+    """
+    feedback, cost = claude_client.get_structured_response(
+        state["system_prompt"], review_prompt
     )
-    return "rewrite"
+    print(f"---Correction Review Feedback: {feedback}---")
+    return {
+        "correction_review_feedback": feedback,
+        "total_cost": state.get("total_cost", 0) + cost,
+    }
+
+
+async def critic_node(state: EmailGenState) -> dict:
+    """Acts as the final gatekeeper, checking the *refined* draft against non-negotiable rules."""
+    print("---NODE: Final Critic Review---")
+    critic_prompt = f"""
+        You are a final proofreader. Your only job is to give a final check on the following email against the non-negotiable rules.
+        Use the provided source data for verification. If the email violates ANY rule, respond with "FAIL" and a one-sentence explanation.
+        If the email is perfect and follows all rules, respond ONLY with the word "PASS".
+
+        **Non-Negotiable Rules:**
+            1.  The email must NOT contain any placeholders like [Company Name], [First Name], etc.
+            2.  The email must NOT contain any data (names, statistics, facts) that cannot be verified from the 'Source Data' below.
+            3.  The email must NOT mention client names or industry that are not present in the 'Client Data' section of the source data.
+            4.  The email must NOT include a signature or sign-off like "Best," "Regards," or "P.S.".
+            5.  The email must NOT make assumptions. All personalization must be tied directly to the provided source data.
+            6.  The prospect's first name, "{state["prospect_name"]}", must be used correctly. It is acceptable to use the name more than once if it enhances personalization.
+            7.  Word count is flexible; do not fail the email based on its length as long as it is coherent and professional.
+            8.  The Email must NOT mention "AI-powered solutions" as the content of the email, it should be more personlized for the prospects need.
+            9.	The email must not mention “AI-powered solutions” or imply that we have developed any tools. We are a staffing company that provides qualified candidates, not a tech provider or product company.
+
+        **Source Data:**
+            - Prospect Info: {json.dumps(state["prospect_info"], indent=2)}
+            - Prospect's LinkedIn Posts: {json.dumps(state["prospect_posts"], indent=2)}
+            - Client Data: {json.dumps(state["client_data"], indent=2)}
+            - Blueprint: {json.dumps(state["blueprint"], indent=2)}
+            - About Inhousen: {json.dumps(state["company_info"], indent=2)}
+            - System Prompt: {json.dumps(state["system_prompt"], indent=2)}
+        --- END SOURCE DATA ---
+
+        **Email Draft to Review:**
+        Subject: {state["draft_subject"]}
+        Body: {state["draft_email"]}
+    """
+    feedback, cost = claude_client.get_structured_response(
+        state["system_prompt"], critic_prompt
+    )
+    print(f"---Critic Feedback: {feedback}---")
+    return {
+        "critic_feedback": feedback,
+        "total_cost": state.get("total_cost", 0) + cost,
+    }
+
+
+def prospect_found(state: EmailGenState) -> str:
+    return (
+        "end"
+        if "error" in state.get("prospect_info", {}) or not state.get("system_prompt")
+        else "continue"
+    )
+
+
+def did_correction_pass(state: EmailGenState) -> str:
+    """Checks if the self-correction plan was successfully implemented."""
+    print("---NODE: Making Decision on Correction Review---")
+    refine_count = state["refine_count"]
+
+    if "PASS" in state.get("correction_review_feedback", ""):
+        print("---DECISION: Correction plan PASSED. Proceeding to final critic.---")
+        return "pass"
+
+    if refine_count >= 4:  # 1 draft + 2 refinement attempts
+        print(
+            f"---DECISION: Max refinements ({refine_count}) reached. Finishing flow despite correction FAIL.---"
+        )
+        return "fail"  # End the loop even if it fails
+
+    print("---DECISION: Correction plan FAILED. Rerouting for another refinement.---")
+    return "refine"
+
+
+def did_critic_pass(state: EmailGenState) -> str:
+    """A final check. This should almost always pass."""
+    if "PASS" in state.get("critic_feedback", ""):
+        print("---DECISION: Final Critic PASSED. Finishing flow.---")
+        return "end"
+    else:
+        print("---DECISION: Final Critic FAILED. Finishing flow with failed draft.---")
+        return "end"
 
 
 def build_graph() -> StateGraph:
     workflow = StateGraph(EmailGenState)
     workflow.add_node("researcher", research_node)
     workflow.add_node("draft_email", draft_email_node)
-    workflow.add_node("qa_email", qa_node)
-    workflow.add_node("rewrite_email", rewrite_node)
+    workflow.add_node("self_correction", self_correction_node)
+    workflow.add_node("refine_email", refine_node)
+    workflow.add_node("correction_review", correction_review_node)  # New node
+    workflow.add_node("critic", critic_node)
+
     workflow.set_entry_point("researcher")
     workflow.add_conditional_edges(
         "researcher", prospect_found, {"continue": "draft_email", "end": END}
     )
-    workflow.add_edge("draft_email", "qa_email")
+
+    # New workflow: Draft -> Self-Correct -> Refine -> Correction Review -> (loop or Critic)
+    workflow.add_edge("draft_email", "self_correction")
+    workflow.add_edge("self_correction", "refine_email")
+    workflow.add_edge("refine_email", "correction_review")
+
     workflow.add_conditional_edges(
-        "qa_email", should_rewrite, {"rewrite": "rewrite_email", "end": END}
+        "correction_review",
+        did_correction_pass,
+        {
+            "pass": "critic",  # If correction passes, go to final critic
+            "refine": "refine_email",  # If it fails, loop back to refine
+            "fail": "critic",  # If max retries hit, go to critic anyway
+        },
     )
-    workflow.add_edge("rewrite_email", "qa_email")
+
+    workflow.add_conditional_edges(
+        "critic",
+        did_critic_pass,
+        {
+            "end": END,
+            "refine": "refine_email",  # Fallback loop, should rarely be used
+        },
+    )
+
     return workflow.compile()

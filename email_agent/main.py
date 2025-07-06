@@ -81,9 +81,3 @@ async def generate_email_sequence(prospect_url: str):
         print(f"--- Database save result: {save_result} ---")
 
     print(f"\n\nSEQUENCE COMPLETE. TOTAL ESTIMATED COST: ${total_cost:.5f}")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    prospect_to_contact_url = "https://www.linkedin.com/in/lidatohidi"
-    asyncio.run(generate_email_sequence(prospect_to_contact_url))
