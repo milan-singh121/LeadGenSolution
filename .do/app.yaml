@@ -14,13 +14,11 @@ services:
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
-    # Define environment variables for the UI service
+
     envs:
       - key: STREAMLIT_SERVER_PORT
         value: "8080"
         scope: RUN_TIME
-      # ✅ FIX: Explicitly set the PYTHONPATH to the root of the workspace.
-      # This allows Python to find all your modules like 'config', 'clients', etc.
       - key: PYTHONPATH
         value: "/workspace"
         scope: RUN_TIME
@@ -67,9 +65,7 @@ services:
     run_command: celery -A celery_app worker -P gevent --concurrency=10 --loglevel=info
     instance_count: 1
     instance_size_slug: basic-xs
-    # The worker needs all the same secrets and PYTHONPATH
     envs:
-      # This allows Python to find all your modules like 'config', 'clients', etc.
       - key: PYTHONPATH
         value: "/workspace"
         scope: RUN_TIME

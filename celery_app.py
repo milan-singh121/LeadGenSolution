@@ -8,7 +8,10 @@ from celery import Celery
 import logging
 import ssl
 import base64
-import tempfile
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file for local development
+load_dotenv()
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -20,47 +23,48 @@ logger = logging.getLogger(__name__)
 REDIS_BROKER_URL = os.environ.get("REDIS_BROKER_URL")
 REDIS_CA_CERT_B64 = os.environ.get("REDIS_CA_CERT_B64")
 
+CERT_PATH = "redis-ca-cert.pem"
+
 if not REDIS_BROKER_URL:
     raise ValueError("FATAL: REDIS_BROKER_URL environment variable not set.")
 
-if not REDIS_CA_CERT_B64:
-    raise ValueError("FATAL: REDIS_CA_CERT_B64 environment variable not set.")
+broker_ssl_config = None
+# Check if the connection URL requires SSL and if the certificate is provided
+if REDIS_BROKER_URL.startswith("rediss://") and REDIS_CA_CERT_B64:
+    try:
+        # Decode the base64 CA cert and write to a file in the project directory
+        cert_bytes = base64.b64decode(REDIS_CA_CERT_B64)
+        with open(CERT_PATH, "wb") as cert_file:
+            cert_file.write(cert_bytes)
+        logger.info(f"CA certificate written to path: {CERT_PATH}")
 
-logging.info(f"Using Redis Broker URL: {REDIS_BROKER_URL}")
+        # --- Secure SSL Config ---
+        broker_ssl_config = {
+            "ssl_cert_reqs": ssl.CERT_REQUIRED,
+            "ssl_ca_certs": CERT_PATH,
+        }
+    except Exception as e:
+        logger.error(f"Failed to process CA certificate, proceeding without SSL: {e}")
+        broker_ssl_config = None
+else:
+    logger.info("Connecting to Redis without SSL (or certificate not provided).")
 
-# Decode the base64 CA cert and write to temp file
-with tempfile.NamedTemporaryFile(delete=False, mode="wb", suffix=".pem") as cert_file:
-    cert_file.write(base64.b64decode(REDIS_CA_CERT_B64))
-    ca_cert_path = cert_file.name
-
-logger.info(f"CA certificate written to temporary path: {ca_cert_path}")
 
 # --- Celery App Initialization ---
 celery_app = Celery(
-    "workspace",
+    "celery_app",  # More conventional to name the app after its own module.
     broker=REDIS_BROKER_URL,
     backend=REDIS_BROKER_URL,
-    include=["tasks"],
+    include=["tasks"],  # CRITICAL: Explicitly include the tasks module.
 )
 
-# --- Secure SSL Config ---
-celery_app.conf.broker_use_ssl = {
-    "ssl_cert_reqs": ssl.CERT_REQUIRED,
-    "ssl_ca_certs": ca_cert_path,
-}
-celery_app.conf.redis_backend_use_ssl = {
-    "ssl_cert_reqs": ssl.CERT_REQUIRED,
-    "ssl_ca_certs": ca_cert_path,
-}
+# Apply SSL configuration if it was created successfully
+if broker_ssl_config:
+    celery_app.conf.broker_use_ssl = broker_ssl_config
+    celery_app.conf.redis_backend_use_ssl = broker_ssl_config
 
 # --- Optional Configuration ---
 celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
-
-# Automatically discover tasks
-celery_app.autodiscover_tasks()
-
-if __name__ == "__main__":
-    celery_app.start()
