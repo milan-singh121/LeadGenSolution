@@ -163,12 +163,10 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
     api_client = RapidAPIClient(api_key=RAPID_API_KEY)
     db = MongoClient(MONGO_URI)[MONGO_DB_NAME]
 
-    # 1. Get company usernames associated with the new jobs
     jobs_cursor = db.Jobs.find(
         {"job_id": {"$in": new_job_ids}},
         {"company_username": 1, "job_id": 1, "_id": 0},
     )
-    # Create a map of username -> list of job_ids
     username_to_job_ids = {}
     for job in jobs_cursor:
         username = job.get("company_username")
@@ -179,7 +177,6 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
         logger.warning("No company usernames found for the given job IDs.")
         return []
 
-    # 2. Find which companies are missing from our RawCompany collection
     all_usernames = list(username_to_job_ids.keys())
     existing_companies_cursor = db.RawCompany.find(
         {"universalName": {"$in": all_usernames}}, {"universalName": 1}
@@ -187,7 +184,6 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
     existing_usernames = {doc["universalName"] for doc in existing_companies_cursor}
     missing_usernames = set(all_usernames) - existing_usernames
 
-    # 3. Fetch data for missing companies
     newly_fetched_companies = []
     if missing_usernames:
         logger.info(f"Fetching data for {len(missing_usernames)} new companies.")
@@ -204,7 +200,6 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
             except RapidAPIError as e:
                 logger.error(f"Could not fetch company {username}: {e}")
 
-    # 4. Insert newly fetched raw data
     if newly_fetched_companies:
         operations = []
         for company in newly_fetched_companies:
@@ -225,12 +220,10 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
                 f"Upserted {result.upserted_count} new companies and updated {result.modified_count} existing ones in RawCompany."
             )
 
-    # 5. Process all relevant companies (both existing and newly fetched)
     all_relevant_companies_cursor = db.RawCompany.find(
         {"universalName": {"$in": all_usernames}}
     )
 
-    # Helper for parsing staff range
     def parse_staff_range(range_str):
         if not isinstance(range_str, str):
             return pd.Series([None, None])
@@ -242,10 +235,8 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
         except Exception:
             return pd.Series([None, None])
 
-    # 6. Clean and filter the company data
     icp_fit_companies = []
     for company in all_relevant_companies_cursor:
-        # Clean data
         if "staffCountRange" in company:
             limits = parse_staff_range(company["staffCountRange"])
             if limits is not None:
@@ -253,27 +244,21 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
             else:
                 company["lower_limit"], company["upper_limit"] = None, None
 
-        # Filter by industry
         industries = company.get("industries", [])
         if any(ind in BLOCKED_INDUSTRIES for ind in industries):
             continue
-
-        # Filter by ICP employee count (upper_limit <= 200)
 
         if not (
             company.get("upper_limit") is not None and company["upper_limit"] <= 200
         ):
             continue
 
-        # If all filters pass, it's an ICP-fit company
         icp_fit_companies.append(company)
 
     if not icp_fit_companies:
         logger.info("No ICP-fit companies found after filtering.")
         return []
 
-    # 7. Save cleaned, ICP-fit companies to the 'Company' collection
-    # Use upsert to avoid duplicates if the task reruns
     for company in icp_fit_companies:
         company["message_date"] = datetime.utcnow()
         db.Company.update_one(
@@ -284,7 +269,6 @@ def process_and_filter_companies_task(self, new_job_ids: list, pipeline_params: 
         f"Saved {len(icp_fit_companies)} ICP-fit companies to 'Company' collection."
     )
 
-    # 8. Return the list of job_ids that correspond to the ICP-fit companies
     final_valid_job_ids = []
     fit_company_usernames = {c["universalName"] for c in icp_fit_companies}
     for username, job_ids in username_to_job_ids.items():
@@ -345,7 +329,11 @@ def check_and_route_task(
         downstream_pipeline.apply_async(args=(all_job_ids,))
     else:
         logger.info("ROUTER: Not enough companies. Triggering next search loop.")
-        start_lead_generation_loop.delay(pipeline_params, all_job_ids, attempt + 1)
+        start_lead_generation_loop.delay(
+            pipeline_params=pipeline_params,
+            all_collected_job_ids=all_job_ids,
+            attempt=attempt + 1,
+        )
 
 
 @celery_app.task(bind=True)
@@ -361,10 +349,17 @@ def start_lead_generation_loop(
     JOBS_PER_ATTEMPT = 75
     start_offset = (attempt - 1) * JOBS_PER_ATTEMPT
 
+    # ✅ FIX: Chain arguments must be passed by keyword to avoid TypeErrors.
     loop_chain = (
-        fetch_and_clean_jobs_task.s(pipeline_params, start_offset=start_offset)
-        | process_and_filter_companies_task.s(pipeline_params)
-        | check_and_route_task.s(pipeline_params, all_collected_job_ids, attempt)
+        fetch_and_clean_jobs_task.s(
+            pipeline_params=pipeline_params, start_offset=start_offset
+        )
+        | process_and_filter_companies_task.s(pipeline_params=pipeline_params)
+        | check_and_route_task.s(
+            pipeline_params=pipeline_params,
+            all_collected_job_ids=all_collected_job_ids,
+            attempt=attempt,
+        )
     )
     loop_chain.apply_async()
 
@@ -381,7 +376,7 @@ def fetch_and_process_people_task(self, valid_job_ids: list, pipeline_params: di
     run_id = pipeline_params.get("run_id")
     update_status(run_id, "Fetching and Processing People...")
     if not valid_job_ids:
-        return []
+        return ([], [])  # Return empty tuple for the next task
 
     logger.info(f"TASK 3: Fetching people for {len(valid_job_ids)} jobs.")
     api_client = RapidAPIClient(api_key=RAPID_API_KEY)
@@ -389,7 +384,7 @@ def fetch_and_process_people_task(self, valid_job_ids: list, pipeline_params: di
 
     jobs_df = pd.DataFrame(list(db.Jobs.find({"job_id": {"$in": valid_job_ids}})))
     if jobs_df.empty:
-        return []
+        return ([], valid_job_ids)
 
     recruiter_records = []
     for _, row in jobs_df.iterrows():
@@ -456,7 +451,7 @@ def fetch_and_process_people_task(self, valid_job_ids: list, pipeline_params: di
     logger.info(f"Final People Found :, {final_people_df.shape[0]}")
 
     if final_people_df.empty:
-        return []
+        return ([], valid_job_ids)
 
     enriched_profiles = []
     for url in final_people_df["profileURL"].dropna().unique():
@@ -477,7 +472,7 @@ def fetch_and_process_people_task(self, valid_job_ids: list, pipeline_params: di
             continue
 
     if not enriched_profiles:
-        return []
+        return ([], valid_job_ids)
 
     profiles_df = pd.DataFrame(enriched_profiles)
 
@@ -511,7 +506,6 @@ def fetch_and_process_people_task(self, valid_job_ids: list, pipeline_params: di
         axis=1,
     )
 
-    # Normalize nested JSON columns safely
     final_df = pd.concat(
         [
             final_df.drop(columns=["latest_experience", "geo"], errors="ignore"),
@@ -546,7 +540,6 @@ def fetch_and_process_people_task(self, valid_job_ids: list, pipeline_params: di
         columns=[col for col in cols_to_drop if col in final_df.columns], inplace=True
     )
 
-    # --- Step 4: Save to People Collection ---
     if not final_df.empty:
         update_operations = []
         for record in final_df.to_dict("records"):
@@ -577,7 +570,7 @@ def fetch_posts_task(self, prev_result: tuple, pipeline_params: dict):
     run_id = pipeline_params.get("run_id")
     update_status(run_id, "Fetching Posts...")
     if not people_urls:
-        return people_urls
+        return (people_urls, valid_job_ids)
 
     api_client = RapidAPIClient(api_key=RAPID_API_KEY)
     db = MongoClient(MONGO_URI)[MONGO_DB_NAME]
@@ -589,13 +582,12 @@ def fetch_posts_task(self, prev_result: tuple, pipeline_params: dict):
 
     all_posts = []
     for username in people_usernames:
-        # Check for existing posts first
         cutoff_date = datetime.utcnow() - timedelta(days=30)
         existing_posts = list(
             db.RawPosts.find(
                 {
                     "username": username,
-                    "postedDateTimestamp": {"$gte": cutoff_date.timestamp()},
+                    "postedDateTimestamp": {"$gte": int(cutoff_date.timestamp())},
                 },
                 {"_id": 0},
             )
@@ -617,7 +609,6 @@ def fetch_posts_task(self, prev_result: tuple, pipeline_params: dict):
                         post["message_date"] = datetime.utcnow()
                     all_posts.extend(user_posts)
 
-                    # Upsert new posts into RawPosts based on postUrl
                     if user_posts:
                         operations = [
                             UpdateOne(
@@ -638,11 +629,10 @@ def fetch_posts_task(self, prev_result: tuple, pipeline_params: dict):
 
     if not all_posts:
         logger.info("No posts found for any user.")
-        return people_urls
+        return (people_urls, valid_job_ids)
 
     posts_df = pd.DataFrame(all_posts)
 
-    # Clean posts
     drop_columns = [
         "isBrandPartnership",
         "totalReactionCount",
@@ -674,7 +664,6 @@ def fetch_posts_task(self, prev_result: tuple, pipeline_params: dict):
         resharedPost=posts_df["resharedPost"].apply(process_reshared_data),
     ).rename(columns={"Username": "username"})
 
-    # Upsert cleaned posts into the 'Posts' collection
     if not posts_df.empty:
         update_operations = []
         for record in posts_df.to_dict("records"):
@@ -703,17 +692,16 @@ def find_emails_task(self, prev_result: tuple, pipeline_params: dict):
     run_id = pipeline_params.get("run_id")
     update_status(run_id, "Finding Emails (Step 1/2)...")
     if not people_urls:
-        return people_urls
+        return (people_urls, valid_job_ids)
 
     snov_client = SnovClient(client_id=SNOV_CLIENT_ID, client_secret=SNOV_CLIENT_SECRET)
     db = MongoClient(MONGO_URI)[MONGO_DB_NAME]
 
-    # --- Step 1: Find by Profile URL ---
     for profile_url in people_urls:
         try:
             person = db.People.find_one({"profileURL": profile_url})
             if person and person.get("snov_emails"):
-                continue  # Skip if already has emails
+                continue
 
             snov_data = db.RawSnovData.find_one({"profileURL": profile_url})
             if not snov_data:
@@ -749,7 +737,6 @@ def find_emails_task(self, prev_result: tuple, pipeline_params: dict):
             logger.error(f"Unexpected error in Step 1 for {profile_url}: {e}")
             continue
 
-    # --- Step 2: Enrich Missing Emails using Domain Search ---
     update_status(run_id, "Enriching Missing Emails (Step 2/2)...")
 
     people_data = list(
@@ -795,7 +782,7 @@ def find_emails_task(self, prev_result: tuple, pipeline_params: dict):
             if not task_hash:
                 continue
 
-            time.sleep(30)  # Wait for async task to complete
+            time.sleep(30)
 
             email_data = snov_client.get_email_finder_result(task_hash)
             if email_data.get("success") and email_data.get("data"):
@@ -814,7 +801,6 @@ def find_emails_task(self, prev_result: tuple, pipeline_params: dict):
                         },
                     )
 
-                    # 🔽 Upsert domain enrichment data to RawSnovData
                     db.RawSnovData.update_one(
                         {"profileURL": person["profileURL"]},
                         {
@@ -851,7 +837,7 @@ def generate_questionnaire_task(self, prev_result: tuple, pipeline_params: dict)
     people_urls, valid_job_ids = prev_result
     update_status(pipeline_params.get("run_id"), "Generating Questionnaires...")
     if not people_urls:
-        return people_urls
+        return (people_urls, valid_job_ids)
 
     logger.info(f"TASK 6: Generating questionnaires for {len(people_urls)} people.")
     db = MongoClient(MONGO_URI)[MONGO_DB_NAME]
@@ -881,7 +867,6 @@ def generate_questionnaire_task(self, prev_result: tuple, pipeline_params: dict)
                 logger.warning(f"People data empty for {username}")
                 continue
 
-            # Defensive clean_data_for_questionnaire
             try:
                 people_dict, recent_posts = clean_data_for_questionnaire(
                     people_df, posts_df
@@ -943,41 +928,31 @@ def generate_questionnaire_task(self, prev_result: tuple, pipeline_params: dict)
     autoretry_for=(Exception,),
     retry_kwargs={"max_retries": 1, "countdown": 300},
 )
-def generate_email_sequence_task(self, prev_result: tuple, pipeline_params: dict):
+async def generate_email_sequence_task(self, prev_result: tuple, pipeline_params: dict):
     """
     Task 7: Runs the email generation agent for each prospect.
+    ✅ FIX: This is now a native async task.
     """
     people_urls, valid_job_ids = prev_result
     update_status(pipeline_params.get("run_id"), "Generating Email Sequences...")
     if not people_urls:
-        return people_urls
+        return (people_urls, valid_job_ids)
 
     logger.info(
         f"TASK 7: Starting email generation agent for {len(people_urls)} prospects."
     )
 
-    async def main_async_loop():
-        """Helper async function to run the agent calls in a single event loop."""
-        for url in people_urls:
-            try:
-                logger.info(f"--- Running email agent for prospect: {url} ---")
-                await generate_email_sequence(url)
-                logger.info(f"--- Finished email agent for prospect: {url} ---")
-            except Exception as e:
-                # Log the error for the specific URL but continue with the next one
-                logger.error(
-                    f"Email generation agent failed for URL {url}: {e}", exc_info=True
-                )
-                continue
-
-    # Run the main async function once. This creates one event loop for all URLs.
-    try:
-        asyncio.run(main_async_loop())
-    except Exception as e:
-        logger.error(
-            f"A critical error occurred in the email generation task: {e}",
-            exc_info=True,
-        )
+    for url in people_urls:
+        try:
+            logger.info(f"--- Running email agent for prospect: {url} ---")
+            # ✅ FIX: Simply 'await' the async function without using asyncio.run()
+            await generate_email_sequence(url)
+            logger.info(f"--- Finished email agent for prospect: {url} ---")
+        except Exception as e:
+            logger.error(
+                f"Email generation agent failed for URL {url}: {e}", exc_info=True
+            )
+            continue
 
     logger.info("TASK 7: Finished running all email generation agents.")
     return (people_urls, valid_job_ids)
@@ -1078,7 +1053,6 @@ def dump_data_to_snov_task(self, prev_result: tuple, pipeline_params: dict):
 
             final_payload = {k: v for k, v in payload.items() if v is not None}
 
-            # --- Save to FinalData collection in MongoDB ---
             mongo_payload = final_payload.copy()
             mongo_payload["listId"] = snov_list_id
             mongo_payload["message_date"] = datetime.utcnow()
@@ -1117,6 +1091,8 @@ def start_lead_generation_pipeline(pipeline_params: dict):
     run_id = pipeline_params.get("run_id")
     logger.info(f"--- LEAD GENERATION PIPELINE TRIGGERED (RUN ID: {run_id}) ---")
     update_status(run_id, "Pipeline Started")
-    start_lead_generation_loop.delay(pipeline_params=pipeline_params)
+    start_lead_generation_loop.delay(
+        pipeline_params=pipeline_params, all_collected_job_ids=[], attempt=1
+    )
 
     return {"status": "Pipeline loop initiated successfully!"}
