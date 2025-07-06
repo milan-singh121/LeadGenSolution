@@ -68,3 +68,6 @@ celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
+
+if __name__ == "__main__":
+    celery_app.start()
