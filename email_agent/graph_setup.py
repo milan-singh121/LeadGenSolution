@@ -158,7 +158,7 @@ async def self_correction_node(state: EmailGenState) -> dict:
         Your goal is to identify areas for improvement before it goes to a final check.
 
         **Non-Negotiable Rules:**
-            1.  The email must NOT contain any placeholders like [Company Name], [First Name], etc.
+            1.  The email must NOT contain any placeholders like [Company Name], [First Name], [Signature], [Your Name], etc.
             2.  The email must NOT contain any data (names, statistics, facts) that cannot be verified from the 'Source Data' below.
             3.  The email must NOT mention client names or industry that are not present in the 'Client Data' section of the source data.
             4.  The email must NOT include a signature or sign-off like "Best," "Regards," or "P.S.".
@@ -266,7 +266,7 @@ async def critic_node(state: EmailGenState) -> dict:
         If the email is perfect and follows all rules, respond ONLY with the word "PASS".
 
         **Non-Negotiable Rules:**
-            1.  The email must NOT contain any placeholders like [Company Name], [First Name], etc.
+            1.  The email must NOT contain any placeholders like [Company Name], [First Name], [Signature], [Your Name], etc.
             2.  The email must NOT contain any data (names, statistics, facts) that cannot be verified from the 'Source Data' below.
             3.  The email must NOT mention client names or industry that are not present in the 'Client Data' section of the source data.
             4.  The email must NOT include a signature or sign-off like "Best," "Regards," or "P.S.".
