@@ -18,7 +18,7 @@ project_root = os.path.abspath(os.path.join(app_dir))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from email_check_agents.tools import (
+from email_agent.tools import (
     get_prospect_info,
     get_prospect_posts,
     get_company_info,
@@ -26,9 +26,9 @@ from email_check_agents.tools import (
     create_text_embedding,
     find_similar_clients,
 )
-from email_check_agents.prompt import get_email_system_prompt, get_email_user_prompt
-from email_check_agents.agent_utils import extract_emails_from_llm_response
-from email_check_agents.db_client import db as async_db
+from email_agent.prompt import get_email_system_prompt, get_email_user_prompt
+from email_agent.agent_utils import extract_emails_from_llm_response
+from email_agent.db_client import db as async_db
 from clients.llm_clients import ClaudeClient  # Assuming you have this client
 
 logger = logging.getLogger(__name__)
